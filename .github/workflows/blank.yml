@@ -147,7 +147,7 @@ jobs:
           RESPONSE=$(curl -s -X POST https://api.openai.com/v1/chat/completions \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"model\": \"$GPT_MODEL\", \"messages\": [$SYS_CONTENT_JSON, $USER_CONTENT_JSON], \"temperature\": 0.2}")
+            -d "{\"model\": \"$GPT_MODEL\", \"messages\": [$SYS_CONTENT_JSON, $USER_CONTENT_JSON]}")
           echo "$(echo "$RESPONSE" | jq -r '.choices[0].message.content')" > "${FILE}.txt"
           cat "${FILE}.txt"
 
@@ -225,7 +225,7 @@ jobs:
           RESPONSE=$(curl -s -X POST https://api.openai.com/v1/chat/completions \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"model\": \"$GPT_MODEL\", \"messages\": [$SYS_CONTENT_JSON, $USER_CONTENT_JSON], \"temperature\": 0.2}")
+            -d "{\"model\": \"$GPT_MODEL\", \"messages\": [$SYS_CONTENT_JSON, $USER_CONTENT_JSON]}")
           echo "RESPONSE: $RESPONSE"
           echo "$(echo "$RESPONSE" | jq -r '.choices[0].message.content')" > comment.txt
           cat comment.txt
