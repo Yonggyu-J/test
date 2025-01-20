@@ -1,0 +1,301 @@
+name: Comment on Commit
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  job_A:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Generate JSON with file changes
+        id: generate
+        env: 
+          PARSING_EXTS: ${{ vars.PARSING_EXTS }}
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          COMMIT_MESSAGE=$(git log -1 --pretty=format:%s $COMMIT_SHA)
+          
+          generate_json() {
+            local filter=$1
+            local name=$2
+            local diff_option=$3
+            FILES=$(git diff --diff-filter=$filter --name-only HEAD^ HEAD | jq -R -s -c 'split("\n")[:-1]')
+            DETAILS=$(jq -n '[]')
+            for file in $(echo "$FILES" | jq -r '.[]'); do
+              content=$(git show HEAD:$file | jq -Rs .)
+              target=$(test -n "$(echo "$PARSING_EXTS" | grep -o "${file##*.}")" && echo 1 || echo 0)
+              DETAILS=$(echo "$DETAILS" | jq --arg file "$file" --arg content "$content" --argjson target "$target" --arg diff_option "$diff_option" '. += [{"file": $file, "content": $content, "target": $target, "diff_option": $diff_option}]')
+            done
+            echo "$DETAILS" > $name.json
+          }
+          
+          generate_json A added_details
+          generate_json M modified_details
+          generate_json D deleted_details
+          
+          jq -n --arg sha "$COMMIT_SHA" --arg commit_message "$COMMIT_MESSAGE" \
+          --slurpfile added added_details.json --slurpfile modified modified_details.json --slurpfile deleted deleted_details.json \
+          '{"sha": $sha, "commit_message": $commit_message, "added": $added[0], "modified": $modified[0], "deleted": $deleted[0]}' > commit_details.json
+          
+      - name: Split added and non-added JSON files
+        run: |
+          jq '.added' commit_details.json > commit_details_b.json
+          jq 'del(.added[] | .target, .content, .diff_option)' commit_details.json > commit_details_c.json
+
+          cat commit_details.json
+          cat commit_details_b.json
+          cat commit_details_c.json
+
+      - name: Upload commit_details_b.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit_A_b
+          path: commit_details_b.json
+
+      - name: Upload commit_details_c.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit_A_c
+          path: commit_details_c.json
+
+  job_B:
+    runs-on: ubuntu-latest
+    needs: job_A
+    env: 
+      EXTRACTING_MAX_JOBS: ${{ vars.EXTRACTING_MAX_JOBS }}
+    outputs:
+      target_files: ${{ steps.check_files.outputs.target_files }}
+      skip: ${{ steps.check_files.outputs.skip }}
+    steps:
+      - name: Download commit_details_b.json artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: commit_A_b
+          path: .
+          
+      - name: Check if there are target files
+        id: check_files
+        run: |
+          TARGET_FILES="[]"
+          if [ -s commit_details_b.json ]; then
+            echo "commit_details_b.json exists and is not empty."
+            TARGET_FILES=$(jq -c '[.[] | select(.target == 1) | .file]' commit_details_b.json) || { echo "jq command failed"; exit 1; }
+          else
+            echo "commit_details_b.json does not exist or is empty."
+          fi
+          
+          if [ $EXTRACTING_MAX_JOBS -gt 0 ]; then
+            TARGET_FILES=$(echo $TARGET_FILES | jq -c "map(tostring) | .[:$EXTRACTING_MAX_JOBS]")
+          else
+            # EXTRACTING_MAX_JOBS가 0 이하인 경우
+            TARGET_FILES=$(echo $TARGET_FILES | jq -c "map(tostring)")
+          fi
+          echo "target_files=$TARGET_FILES" >> $GITHUB_OUTPUT
+
+          if [ "$TARGET_FILES" = "[]" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Target Files: ${{ steps.check_files.outputs.target_files }}"
+
+      - name: Verify output values
+        run: |
+          echo "Target Files: ${{ steps.check_files.outputs.target_files }}"
+          echo "Skip: ${{ steps.check_files.outputs.skip }}"
+          
+  job_B2:
+    runs-on: ubuntu-latest
+    needs: job_B
+    if: needs.job_B.outputs.skip == 'false'
+    strategy:
+      max-parallel: 5
+      fail-fast: true
+      matrix:
+        file: ${{ fromJson(needs.job_B.outputs.target_files) }}
+    steps:
+      - name: Download commit_details_b.json artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: commit_A_b
+          path: .
+
+      - name: Process file with ChatGPT
+        id: chatgpt
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SYS_CONTENT: ${{ vars.GPT_SUMMARIZE }}
+          GPT_MODEL: ${{ vars.GPT_MODEL }}
+        run: |
+          FILE=$(basename "${{ matrix.file }}")
+          echo "FILE=$FILE" >> $GITHUB_ENV
+          FILENAME=${FILE%.*}
+          echo "FILENAME=$FILENAME" >> $GITHUB_ENV
+          FILE_CONTENT=$(jq -r --arg file "${{ matrix.file }}" '.[] | select(.file == $file) | .content' commit_details_b.json)
+          SYS_CONTENT_JSON=$(jq -n --arg content "$SYS_CONTENT" '{"role": "system", "content": $content}')
+          USER_CONTENT_JSON=$(jq -n --arg content "$FILE_CONTENT" '{"role": "user", "content": $content}')
+          RESPONSE=$(curl -s -X POST https://api.openai.com/v1/chat/completions \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\": \"$GPT_MODEL\", \"messages\": [$SYS_CONTENT_JSON, $USER_CONTENT_JSON], \"temperature\": 0.2}")
+          echo "$(echo "$RESPONSE" | jq -r '.choices[0].message.content')" > "${FILE}.txt"
+          cat "${FILE}.txt"
+
+      - name: Upload processed file
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit_B2_${{ env.FILENAME }}
+          path: ${{ env.FILE }}.txt
+
+  job_B3:
+    runs-on: ubuntu-latest
+    needs: job_B2
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: List files
+        run: ls ./artifacts
+        
+      - name: Merge summarize files into JSON
+        run: |
+          output_file="summarize_code.json"
+          echo "{" > $output_file
+          first=true
+          for dir in ./artifacts/commit_B2_*; do
+            if [ -d "$dir" ]; then 
+              for file in "$dir"/*.txt; do
+                if [ -f "$file" ]; then  
+                  filename=$(basename -- "$file" .txt)  # .txt 확장자를 제거
+                  content=$(cat "$file" | jq -Rs .)
+                  if [ "$first" = true ]; then
+                    first=false
+                  else
+                    echo "," >> $output_file
+                  fi
+                  echo "\"$filename\": $content" >> $output_file
+                fi
+              done
+            fi
+          done
+          echo "}" >> $output_file
+
+          cat summarize_code.json
+
+      - name: Upload merged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit_B_artifacts
+          path: summarize_code.json
+
+  job_C:
+    runs-on: ubuntu-latest
+    needs: job_A
+    steps:
+      - name: Download commit_details_c.json artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: commit_A_c
+          path: .
+
+      - name: Get comment from ChatGPT
+        id: chatgpt
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SYS_CONTENT: ${{ vars.GPT_COMMENT }}
+          GPT_MODEL: ${{ vars.GPT_MODEL }}
+        run: |
+          COMMIT_SHA=$(jq -r '.sha' commit_details_c.json)
+          echo $COMMIT_SHA > SHA.txt
+          
+          SYS_CONTENT_JSON=$(jq -n --arg content "$SYS_CONTENT" '{"role": "system", "content": $content}')
+          USER_CONTENT_JSON=$(jq -Rs '{role: "user", content: .}' commit_details_c.json)
+          RESPONSE=$(curl -s -X POST https://api.openai.com/v1/chat/completions \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\": \"$GPT_MODEL\", \"messages\": [$SYS_CONTENT_JSON, $USER_CONTENT_JSON], \"temperature\": 0.2}")
+          echo "RESPONSE: $RESPONSE"
+          echo "$(echo "$RESPONSE" | jq -r '.choices[0].message.content')" > comment.txt
+          cat comment.txt
+          
+      - name: Upload comment
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit_C_artifacts
+          path: |
+            comment.txt
+            SHA.txt
+            
+  job_D:
+    runs-on: ubuntu-latest
+    needs: [job_B3, job_C]
+    permissions:
+      contents: write
+    if: always()
+    steps:
+      - name: Download processed files from job B3
+        if: needs.job_B3.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: commit_B_artifacts
+          path: .
+
+      - name: Download processed files from job C
+        uses: actions/download-artifact@v4
+        with:
+          name: commit_C_artifacts
+          path: .
+
+      - name: Insert summarize_code into comment
+        if: needs.job_B3.result == 'success'
+        run: |
+          # summarize_code.json 파일이 존재하는지 확인
+          set -e
+          if [ ! -f summarize_code.json ]; then
+            echo "summarize_code.json 파일이 존재하지 않습니다."
+            exit 1
+          fi     
+      - name: Combine Markdown files
+        run: |
+          output_file="comment.txt"
+          comment_content=$(cat comment.txt)
+          summarize_content=$(cat summarize_code.json | jq -r 'to_entries[] | "       <details>\n       <summary><strong>\(.key)</strong></summary>\n       \n       \(.value | gsub("\\n"; "\n       "))\n       </details>\n"')
+          #if [ -z "$summarize_content" ]; then
+          #    new_comment_content=$(echo "$comment_content" | awk '!/\*\*Files Added\*\*/')
+          #else
+          #  new_comment_content=$(echo "$comment_content" | awk -v add="$summarize_content" '1;/\*\*Files Added\*\*/{print add}')
+          #fi
+          new_comment_content=$(echo "$comment_content" | awk -v add="$summarize_content" '1;/\*\*Files Added\*\*/{print add}')
+          echo -e "$new_comment_content" > $output_file
+        
+      - name: Add comment to commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMIT_SHA=$(cat SHA.txt)
+          echo "COMMIT_SHA: $COMMIT_SHA"
+          COMMENT=$(cat comment.txt)
+
+          if [ -z "$COMMENT" ] || [ "$COMMENT" == "null" ]; then
+            COMMENT="gpt 서버와의 연결이 불안정합니다."
+          fi
+          
+          COMMENT_JSON=$(jq -n --arg body "$COMMENT" '{body: $body}')
+
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/commits/$COMMIT_SHA/comments \
+            -d "$COMMENT_JSON"
