@@ -271,20 +271,24 @@ jobs:
         run: |
           output_file="comment.txt"
           comment_content=$(cat comment.txt)
-    
-          # 요약 내용을 각 섹션별로 생성
-          summarize_added=$(jq -r '.added | to_entries[] | "       <details>\n       <summary><strong>\(.key)</strong></summary>\n       \n       \(.value | gsub("\\n"; "\n       "))\n       </details>\n"' summarize_code.json)
-          summarize_modified=$(jq -r '.modified | to_entries[] | "       <details>\n       <summary><strong>\(.key)</strong></summary>\n       \n       \(.value | gsub("\\n"; "\n       "))\n       </details>\n"' summarize_code.json)
-    
-          # 요약 내용 삽입
-          if [ -n "$summarize_added" ]; then
-              comment_content=$(echo "$comment_content" | awk -v add="$summarize_added" '/\*\*추가된 파일\*\*/{print; print add; next}1')
+          
+          # summarize_code.json에서 각 파일의 요약 내용을 추출하여 summarize_content 생성
+          summarize_content=$(jq -r 'to_entries[] | "    <details>\n    <summary><strong>\(.key)</strong></summary>\n\n\(.value)\n    </details>\n"' summarize_code.json)
+          
+          echo "Summarize Content:"
+          echo "$summarize_content"
+          
+          echo "Comment Content Before Insertion:"
+          echo "$comment_content"
+          
+          if [ -z "$summarize_content" ]; then
+              # 요약이 없을 경우 **추가된 파일**: 섹션을 제거하거나 필요한 처리를 합니다.
+              echo "$comment_content" | awk '!/\*\*추가된 파일\*\*:/ {print}' > $output_file
+          else
+              # **추가된 파일**: 섹션 아래에 summarize_content 삽입
+              new_comment_content=$(echo "$comment_content" | awk -v add="$summarize_content" '/\*\*추가된 파일\*\*:/ {print; print add; next}1')
+              echo -e "$new_comment_content" > $output_file
           fi
-    
-          if [ -n "$summarize_modified" ]; then
-              comment_content=$(echo "$comment_content" | awk -v mod="$summarize_modified" '/\*\*수정된 파일\*\*/{print; print mod; next}1')
-          fi
-          echo -e "$comment_content" > $output_file
           
       - name: Add comment to commit
         env:
