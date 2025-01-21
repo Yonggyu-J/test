@@ -273,13 +273,24 @@ jobs:
           output_file="comment.txt"
           comment_content=$(cat comment.txt)
           summarize_content=$(cat summarize_code.json | jq -r 'to_entries[] | "       <details>\n       <summary><strong>\(.key)</strong></summary>\n       \n       \(.value | gsub("\\n"; "\n       "))\n       </details>\n"')
-          cleaned_comment_content=$(echo "$comment_content" | awk '
-            BEGIN { in_section = 0 }
-              /\\*\\*추가된 파일\\*\\*/ { in_section = 1; print; next }
-              /\\*\\*변경된 파일\\*\\*/ { in_section = 0; print; next }
-              !in_section
-          ')
-          new_comment_content=$(echo "$cleaned_comment_content" | awk -v add="$summarize_content" '1;/\*\*추가된 파일\*\*/{print add}')
+          removed_content=$(echo "$comment_content" | awk '
+            BEGIN { inside=0 }
+            /^\s*-\s*\*\*추가된 파일\*\*:/ { 
+               print
+               inside=1
+               next
+            }
+            inside && /^\s*-\s+/ { 
+                # 리스트 항목을 제거
+                next 
+            }
+            inside && !/^\s*-\s+/ { 
+                # 추가된 파일 섹션 이후의 다른 섹션이 시작되면 flag 해제
+                inside=0 
+            }
+            { print }
+          ')      
+          new_comment_content=$(echo "$removed_content" | awk -v add="$summarize_content" '1;/\*\*추가된 파일\*\*/{print add}')
           echo -e "$new_comment_content" > $output_file
         
       - name: Add comment to commit
