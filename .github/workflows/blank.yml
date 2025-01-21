@@ -267,29 +267,35 @@ jobs:
             echo "summarize_code.json 파일이 존재하지 않습니다."
             exit 1
           fi     
+
       - name: Combine Markdown files
         run: |
           output_file="comment.txt"
-          comment_content=$(cat comment.txt)
-          
-          # summarize_code.json에서 각 파일의 요약 내용을 추출하여 summarize_content 생성
+          comment_content=$(cat comment.txt)        
           summarize_content=$(jq -r 'to_entries[] | "    <details>\n    <summary><strong>\(.key)</strong></summary>\n\n\(.value)\n    </details>\n"' summarize_code.json)
           
           echo "Summarize Content:"
-          echo "$summarize_content"
-          
+          echo "$summarize_content"      
           echo "Comment Content Before Insertion:"
           echo "$comment_content"
-          
+        
           if [ -z "$summarize_content" ]; then
-              # 요약이 없을 경우 **추가된 파일**: 섹션을 제거하거나 필요한 처리를 합니다.
               echo "$comment_content" | awk '!/\*\*추가된 파일\*\*:/ {print}' > $output_file
           else
-              # **추가된 파일**: 섹션 아래에 summarize_content 삽입
-              new_comment_content=$(echo "$comment_content" | awk -v add="$summarize_content" '/\*\*추가된 파일\*\*:/ {print; print add; next}1')
+              new_comment_content=$(echo "$comment_content" | awk -v add="$summarize_content" '
+                  BEGIN { insert=0 }
+                  /\*\*추가된 파일\*\*:/ { 
+                      print; 
+                      print add; 
+                      insert=1; 
+                      next 
+                  } 
+                  insert && /^\s*-/ { next } 
+                  { print }
+              ')
               echo -e "$new_comment_content" > $output_file
           fi
-          
+              
       - name: Add comment to commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
