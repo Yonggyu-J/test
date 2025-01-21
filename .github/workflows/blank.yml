@@ -271,31 +271,11 @@ jobs:
       - name: Combine Markdown files
         run: |
           output_file="comment.txt"
-          comment_content=$(cat comment.txt)        
-          summarize_content=$(jq -r 'to_entries[] | "    <details>\n    <summary><strong>\(.key)</strong></summary>\n\n\(.value)\n    </details>\n"' summarize_code.json)
-          
-          echo "Summarize Content:"
-          echo "$summarize_content"      
-          echo "Comment Content Before Insertion:"
-          echo "$comment_content"
+          comment_content=$(cat comment.txt)
+          summarize_content=$(cat summarize_code.json | jq -r 'to_entries[] | "       <details>\n       <summary><strong>\(.key)</strong></summary>\n       \n       \(.value | gsub("\\n"; "\n       "))\n       </details>\n"')
+          new_comment_content=$(echo "$comment_content" | awk -v add="$summarize_content" '1;/\*\*추가된 파일\*\*/{print add}')
+          echo -e "$new_comment_content" > $output_file
         
-          if [ -z "$summarize_content" ]; then
-              echo "$comment_content" | awk '!/\*\*추가된 파일\*\*:/ {print}' > $output_file
-          else
-              new_comment_content=$(echo "$comment_content" | awk -v add="$summarize_content" '
-                  BEGIN { insert=0 }
-                  /\*\*추가된 파일\*\*:/ { 
-                      print; 
-                      print add; 
-                      insert=1; 
-                      next 
-                  } 
-                  insert && /^\s*-/ { next } 
-                  { print }
-              ')
-              echo -e "$new_comment_content" > $output_file
-          fi
-              
       - name: Add comment to commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
