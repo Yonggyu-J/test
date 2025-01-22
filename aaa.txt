@@ -1,0 +1,31 @@
+public class SACWebAppServletInitializer extends SpringBootServletInitializer{
+
+	private final Logger logger = LoggerFactory.getLogger(SACWebAppServletInitializer.class);
+
+	/**
+	 * 쿠키 세팅
+	 * @param servletContext the {@code ServletContext} to initialize
+	 * @throws ServletException
+	 */
+	@Override
+	public void onStartup(ServletContext servletContext) throws ServletException {
+
+		logger.debug("SACWebAppServletInitializer START-============================================");
+
+		super.onStartup(servletContext);
+
+		servletContext.setSessionTrackingModes(Collections.singleton(SessionTrackingMode.COOKIE));
+
+		SessionCookieConfig sessionCookieConfig = servletContext.getSessionCookieConfig();
+		sessionCookieConfig.setName("ChakanUser");
+
+		logger.debug("SACWebAppServletInitializer END-============================================");
+
+	}
+
+	@Override
+	protected SpringApplicationBuilder configure(SpringApplicationBuilder applicationBuilder){
+		return applicationBuilder.sources(SpringBootApplication.class);
+	}
+
+}
